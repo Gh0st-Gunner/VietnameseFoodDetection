@@ -26,12 +26,6 @@ def load_model():
     """Load the trained model"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Get class names from dataset directory
-    train_dir = 'vnfood_combined_dataset/train'
-    class_names = sorted([d for d in os.listdir(train_dir) 
-                         if os.path.isdir(os.path.join(train_dir, d))])
-    num_classes = len(class_names)
-    
     # Load checkpoint first to detect model architecture
     checkpoint_path = 'checkpoints/best_checkpoint.pth'
     if not os.path.exists(checkpoint_path):
@@ -39,6 +33,21 @@ def load_model():
         return None, None, None
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Get class names from checkpoint (they're saved during training)
+    if 'class_names' in checkpoint:
+        class_names = checkpoint['class_names']
+    else:
+        # Fallback: try to load from dataset directory if available
+        train_dir = 'vnfood_combined_dataset/train'
+        if os.path.exists(train_dir):
+            class_names = sorted([d for d in os.listdir(train_dir) 
+                                 if os.path.isdir(os.path.join(train_dir, d))])
+        else:
+            st.error("⚠️ Class names not found in checkpoint and dataset directory is missing.")
+            return None, None, None
+    
+    num_classes = len(class_names)
     
     # Try to detect model type from checkpoint or state_dict structure
     if 'model_name' in checkpoint:
