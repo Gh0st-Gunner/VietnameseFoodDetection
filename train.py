@@ -1,0 +1,432 @@
+"""
+Training script for VNFood Dataset (103 Vietnamese Food Classes)
+Dataset: https://www.kaggle.com/datasets/meowluvmatcha/vnfood-30-100
+"""
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms, models
+import os
+import time
+from pathlib import Path
+import json
+import argparse
+
+
+class VNFoodTrainer:
+    def __init__(self, config):
+        self.config = config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f'Using device: {self.device}')
+        
+        # Setup data transforms
+        self.train_transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.RandomCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        self.val_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Load datasets
+        self.setup_datasets()
+        
+        # Setup model
+        self.setup_model()
+        
+        # Setup training
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = optim.Adam(self.model.parameters(), 
+                                   lr=config['learning_rate'],
+                                   weight_decay=config['weight_decay'])
+        
+        # Learning rate scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='max', factor=0.5, patience=3
+        )
+        
+        # Best accuracy tracking
+        self.best_acc = 0.0
+        self.start_epoch = 1
+        self.best_checkpoints = []  # List of (epoch, acc, path) tuples for top-K models
+        
+    def setup_datasets(self):
+        """Load train, validation, and test datasets"""
+        data_dir = self.config['data_dir']
+        
+        train_dir = os.path.join(data_dir, 'train')
+        val_dir = os.path.join(data_dir, 'val')
+        test_dir = os.path.join(data_dir, 'test')
+        
+        self.train_dataset = datasets.ImageFolder(train_dir, transform=self.train_transform)
+        self.val_dataset = datasets.ImageFolder(val_dir, transform=self.val_transform)
+        self.test_dataset = datasets.ImageFolder(test_dir, transform=self.val_transform)
+        
+        self.train_loader = DataLoader(
+            self.train_dataset, 
+            batch_size=self.config['batch_size'],
+            shuffle=True,
+            num_workers=self.config['num_workers'],
+            pin_memory=True
+        )
+        
+        self.val_loader = DataLoader(
+            self.val_dataset,
+            batch_size=self.config['batch_size'],
+            shuffle=False,
+            num_workers=self.config['num_workers'],
+            pin_memory=True
+        )
+        
+        self.test_loader = DataLoader(
+            self.test_dataset,
+            batch_size=self.config['batch_size'],
+            shuffle=False,
+            num_workers=self.config['num_workers'],
+            pin_memory=True
+        )
+        
+        self.num_classes = len(self.train_dataset.classes)
+        self.class_names = self.train_dataset.classes
+        
+        print(f'\nDataset Information:')
+        print(f'Number of classes: {self.num_classes}')
+        print(f'Training samples: {len(self.train_dataset)}')
+        print(f'Validation samples: {len(self.val_dataset)}')
+        print(f'Test samples: {len(self.test_dataset)}')
+        print(f'Class names: {self.class_names[:5]}... (showing first 5)')
+        
+    def setup_model(self):
+        """Initialize the model"""
+        model_name = self.config['model_name']
+        
+        if model_name == 'resnet50':
+            self.model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+            num_features = self.model.fc.in_features
+            self.model.fc = nn.Linear(num_features, self.num_classes)
+            
+        elif model_name == 'resnet101':
+            self.model = models.resnet101(weights=models.ResNet101_Weights.IMAGENET1K_V2)
+            num_features = self.model.fc.in_features
+            self.model.fc = nn.Linear(num_features, self.num_classes)
+            
+        elif model_name == 'efficientnet_b0':
+            self.model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
+            num_features = self.model.classifier[1].in_features
+            self.model.classifier[1] = nn.Linear(num_features, self.num_classes)
+            
+        elif model_name == 'efficientnet_b3':
+            self.model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
+            num_features = self.model.classifier[1].in_features
+            self.model.classifier[1] = nn.Linear(num_features, self.num_classes)
+            
+        elif model_name == 'mobilenet_v3_large':
+            self.model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.IMAGENET1K_V2)
+            num_features = self.model.classifier[3].in_features
+            self.model.classifier[3] = nn.Linear(num_features, self.num_classes)
+            
+        else:
+            raise ValueError(f'Model {model_name} not supported')
+        
+        self.model = self.model.to(self.device)
+        print(f'\nModel: {model_name}')
+        print(f'Number of parameters: {sum(p.numel() for p in self.model.parameters()):,}')
+        
+    def train_epoch(self, epoch):
+        """Train for one epoch"""
+        self.model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        start_time = time.time()
+        
+        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+            inputs, targets = inputs.to(self.device), targets.to(self.device)
+            
+            self.optimizer.zero_grad()
+            outputs = self.model(inputs)
+            loss = self.criterion(outputs, targets)
+            loss.backward()
+            self.optimizer.step()
+            
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+            
+            if (batch_idx + 1) % self.config['print_freq'] == 0:
+                print(f'Epoch: {epoch} [{batch_idx + 1}/{len(self.train_loader)}] '
+                      f'Loss: {running_loss / (batch_idx + 1):.4f} '
+                      f'Acc: {100. * correct / total:.2f}%')
+        
+        epoch_time = time.time() - start_time
+        train_loss = running_loss / len(self.train_loader)
+        train_acc = 100. * correct / total
+        
+        return train_loss, train_acc, epoch_time
+    
+    def validate(self):
+        """Validate the model"""
+        self.model.eval()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for inputs, targets in self.val_loader:
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+                
+                running_loss += loss.item()
+                _, predicted = outputs.max(1)
+                total += targets.size(0)
+                correct += predicted.eq(targets).sum().item()
+        
+        val_loss = running_loss / len(self.val_loader)
+        val_acc = 100. * correct / total
+        
+        return val_loss, val_acc
+    
+    def test(self):
+        """Test the model"""
+        self.model.eval()
+        correct = 0
+        total = 0
+        
+        class_correct = [0] * self.num_classes
+        class_total = [0] * self.num_classes
+        
+        with torch.no_grad():
+            for inputs, targets in self.test_loader:
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                outputs = self.model(inputs)
+                _, predicted = outputs.max(1)
+                
+                total += targets.size(0)
+                correct += predicted.eq(targets).sum().item()
+                
+                # Per-class accuracy
+                c = predicted.eq(targets)
+                for i in range(len(targets)):
+                    label = targets[i]
+                    class_correct[label] += c[i].item()
+                    class_total[label] += 1
+        
+        test_acc = 100. * correct / total
+        
+        print(f'\n{"="*60}')
+        print(f'Test Accuracy: {test_acc:.2f}%')
+        print(f'{"="*60}')
+        
+        # Print per-class accuracy
+        print('\nPer-class Accuracy:')
+        for i in range(min(10, self.num_classes)):  # Show first 10 classes
+            if class_total[i] > 0:
+                acc = 100. * class_correct[i] / class_total[i]
+                print(f'{self.class_names[i]:20s}: {acc:.2f}%')
+        
+        return test_acc
+    
+    def save_checkpoint(self, epoch, val_acc, is_best=False):
+        """Save model checkpoint"""
+        checkpoint_dir = self.config['checkpoint_dir']
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'val_acc': val_acc,
+            'best_acc': self.best_acc,
+            'config': self.config,
+            'class_names': self.class_names,
+            'best_checkpoints': self.best_checkpoints
+        }
+        
+        # Save last checkpoint
+        last_path = os.path.join(checkpoint_dir, 'last_checkpoint.pth')
+        torch.save(checkpoint, last_path)
+        
+        # Save periodic checkpoint
+        if self.config['save_freq'] > 0 and epoch % self.config['save_freq'] == 0:
+            periodic_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pth')
+            torch.save(checkpoint, periodic_path)
+            print(f'Saved periodic checkpoint at epoch {epoch}')
+        
+        # Save best checkpoint
+        if is_best:
+            best_path = os.path.join(checkpoint_dir, 'best_checkpoint.pth')
+            torch.save(checkpoint, best_path)
+            
+            # Also save to vnfood.pth in the root directory
+            vnfood_path = 'vnfood.pth'
+            torch.save(checkpoint, vnfood_path)
+            print(f'Saved best model with accuracy: {val_acc:.2f}%')
+        
+        # Manage top-K best checkpoints
+        keep_best_k = self.config.get('keep_best_k', 0)
+        if keep_best_k > 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f'best_epoch_{epoch}_acc_{val_acc:.2f}.pth')
+            
+            # Add current checkpoint to the list
+            self.best_checkpoints.append((epoch, val_acc, checkpoint_path))
+            
+            # Sort by accuracy (descending)
+            self.best_checkpoints.sort(key=lambda x: x[1], reverse=True)
+            
+            # Keep only top-K
+            if len(self.best_checkpoints) <= keep_best_k:
+                # Save this checkpoint
+                torch.save(checkpoint, checkpoint_path)
+                print(f'Saved top-{len(self.best_checkpoints)} model (epoch {epoch}, acc: {val_acc:.2f}%)')
+            else:
+                # Remove the worst checkpoint file and entry
+                _, _, path_to_remove = self.best_checkpoints.pop()
+                if os.path.exists(path_to_remove):
+                    os.remove(path_to_remove)
+                
+                # Save current checkpoint if it's in top-K
+                torch.save(checkpoint, checkpoint_path)
+                print(f'Saved top-{keep_best_k} model (epoch {epoch}, acc: {val_acc:.2f}%)')
+    
+    def load_checkpoint(self, checkpoint_path):
+        """Load checkpoint and resume training"""
+        print(f'Loading checkpoint from {checkpoint_path}...')
+        checkpoint = torch.load(checkpoint_path)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        self.start_epoch = checkpoint['epoch'] + 1
+        self.best_acc = checkpoint.get('best_acc', 0.0)
+        
+        if 'best_checkpoints' in checkpoint:
+            self.best_checkpoints = checkpoint['best_checkpoints']
+        
+        print(f'Resumed from epoch {checkpoint["epoch"]} with best accuracy: {self.best_acc:.2f}%')
+        print(f'Continuing from epoch {self.start_epoch}')
+    
+    def train(self):
+        """Main training loop"""
+        print(f'\n{"="*60}')
+        print(f'Starting Training')
+        print(f'{"="*60}\n')
+        
+        for epoch in range(self.start_epoch, self.config['epochs'] + 1):
+            print(f'\nEpoch {epoch}/{self.config["epochs"]}')
+            print(f'{"-"*60}')
+            
+            # Train
+            train_loss, train_acc, epoch_time = self.train_epoch(epoch)
+            
+            # Validate
+            val_loss, val_acc = self.validate()
+            
+            # Update learning rate
+            self.scheduler.step(val_acc)
+            
+            # Print epoch summary
+            print(f'\nEpoch Summary:')
+            print(f'Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%')
+            print(f'Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%')
+            print(f'Time: {epoch_time:.2f}s')
+            print(f'LR: {self.optimizer.param_groups[0]["lr"]:.6f}')
+            
+            # Save checkpoint
+            is_best = val_acc > self.best_acc
+            if is_best:
+                self.best_acc = val_acc
+            
+            self.save_checkpoint(epoch, val_acc, is_best)
+        
+        print(f'\n{"="*60}')
+        print(f'Training Complete!')
+        print(f'Best Validation Accuracy: {self.best_acc:.2f}%')
+        print(f'{"="*60}\n')
+        
+        # Load best model and test
+        print('Loading best model for testing...')
+        best_checkpoint = torch.load(os.path.join(self.config['checkpoint_dir'], 'best_checkpoint.pth'))
+        self.model.load_state_dict(best_checkpoint['model_state_dict'])
+        
+        # Test
+        self.test()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train VNFood Classification Model')
+    parser.add_argument('--data_dir', type=str, default='vnfood_combined_dataset',
+                       help='Path to dataset directory')
+    parser.add_argument('--model', type=str, default='efficientnet_b0',
+                       choices=['resnet50', 'resnet101', 'efficientnet_b0', 
+                               'efficientnet_b3', 'mobilenet_v3_large'],
+                       help='Model architecture')
+    parser.add_argument('--epochs', type=int, default=30,
+                       help='Number of epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                       help='Batch size')
+    parser.add_argument('--lr', type=float, default=0.001,
+                       help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                       help='Weight decay')
+    parser.add_argument('--num_workers', type=int, default=4,
+                       help='Number of data loading workers')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
+                       help='Directory to save checkpoints')
+    parser.add_argument('--print_freq', type=int, default=50,
+                       help='Print frequency')
+    
+    args = parser.parse_args()
+    
+    config = {
+        'data_dir': args.data_dir,
+        'model_name': args.model,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'learning_rate': args.lr,
+        'weight_decay': args.weight_decay,
+        'num_workers': args.num_workers,
+        'checkpoint_dir': args.checkpoint_dir,
+        'print_freq': args.print_freq,
+        'save_freq': 10,  # Save checkpoint every 10 epochs
+        'keep_best_k': 3  # Keep top 3 best models
+    }
+    
+    # Print configuration
+    print('\nConfiguration:')
+    print(json.dumps(config, indent=2))
+    
+    # Create trainer and start training
+    trainer = VNFoodTrainer(config)
+    
+    # Auto-resume from last checkpoint if it exists
+    last_checkpoint = os.path.join(config['checkpoint_dir'], 'last_checkpoint.pth')
+    if os.path.exists(last_checkpoint):
+        print(f'\nFound existing checkpoint, resuming training...')
+        trainer.load_checkpoint(last_checkpoint)
+    else:
+        print('\nNo checkpoint found, starting from scratch...')
+    
+    trainer.train()
+
+
+if __name__ == '__main__':
+    main()
