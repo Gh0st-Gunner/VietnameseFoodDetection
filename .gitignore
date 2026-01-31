@@ -31,7 +31,7 @@ checkpoints/
 
 # Dataset (large files)
 vnfood_combined_dataset/
-
+last_best_checkpoint/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb

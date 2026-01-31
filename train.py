@@ -413,6 +413,7 @@ class VNFoodTrainer:
             print(f'{"="*60}\n')
 
             history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+            self.total_training_time = 0.0
 
             for epoch in range(self.start_epoch, self.config['epochs'] + 1):
                 print(f'\nEpoch {epoch}/{self.config["epochs"]}')
@@ -420,6 +421,7 @@ class VNFoodTrainer:
 
                 # Train
                 train_loss, train_acc, epoch_time = self.train_epoch(epoch)
+                self.total_training_time += epoch_time
                 # Validate
                 val_loss, val_acc = self.validate()
                 # Update learning rate
@@ -458,18 +460,102 @@ class VNFoodTrainer:
             best_checkpoint = torch.load(os.path.join(self.config['checkpoint_dir'], 'best_checkpoint.pth'))
             self.model.load_state_dict(best_checkpoint['model_state_dict'])
             # Test and save overview
-            self.test(history=history, model_name=self.config['model_name'])
+            self.test_acc = self.test(history=history, model_name=self.config['model_name'])
+
+
+def compare_models(results):
+    """Compare multiple trained models and save comparison results"""
+    import pandas as pd
+    
+    print(f'\n{"="*80}')
+    print('MODEL COMPARISON RESULTS')
+    print(f'{"="*80}')
+    
+    # Create comparison dataframe
+    comparison_data = []
+    for model_name, result in results.items():
+        comparison_data.append({
+            'Model': model_name,
+            'Best Val Accuracy': f"{result['best_val_acc']:.2f}%",
+            'Final Test Accuracy': f"{result.get('final_test_acc', 'N/A'):.2f}%" if result.get('final_test_acc') else 'N/A',
+            'Training Time (s)': f"{result.get('training_time', 0):.1f}" if result.get('training_time') else 'N/A'
+        })
+    
+    df = pd.DataFrame(comparison_data)
+    print('\nModel Performance Comparison:')
+    print(df.to_string(index=False))
+    
+    # Save comparison to file
+    os.makedirs('model_comparison', exist_ok=True)
+    comparison_file = os.path.join('model_comparison', 'model_comparison_results.txt')
+    with open(comparison_file, 'w') as f:
+        f.write('MODEL COMPARISON RESULTS\n')
+        f.write('='*80 + '\n\n')
+        f.write(df.to_string(index=False))
+        f.write('\n\nDetailed Results:\n')
+        for model_name, result in results.items():
+            f.write(f'\n{model_name.upper()}:\n')
+            f.write(f'  Best Validation Accuracy: {result["best_val_acc"]:.2f}%\n')
+            if result.get('final_test_acc'):
+                f.write(f'  Final Test Accuracy: {result["final_test_acc"]:.2f}%\n')
+            if result.get('training_time'):
+                f.write(f'  Total Training Time: {result["training_time"]:.1f} seconds\n')
+    
+    # Create bar chart comparison
+    try:
+        import matplotlib.pyplot as plt
+        
+        models = list(results.keys())
+        val_accs = [results[m]['best_val_acc'] for m in models]
+        test_accs = [results[m].get('final_test_acc', 0) for m in models]
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Validation accuracy
+        bars1 = ax1.bar(models, val_accs, color='skyblue')
+        ax1.set_title('Best Validation Accuracy Comparison')
+        ax1.set_ylabel('Accuracy (%)')
+        ax1.set_xticklabels(models, rotation=45, ha='right')
+        for bar, acc in zip(bars1, val_accs):
+            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                    f'{acc:.1f}%', ha='center', va='bottom')
+        
+        # Test accuracy (if available)
+        if any(test_accs):
+            bars2 = ax2.bar(models, test_accs, color='lightgreen')
+            ax2.set_title('Final Test Accuracy Comparison')
+            ax2.set_ylabel('Accuracy (%)')
+            ax2.set_xticklabels(models, rotation=45, ha='right')
+            for bar, acc in zip(bars2, test_accs):
+                if acc > 0:
+                    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                            f'{acc:.1f}%', ha='center', va='bottom')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join('model_comparison', 'model_comparison_chart.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f'\nComparison chart saved to: model_comparison/model_comparison_chart.png')
+        
+    except ImportError:
+        print('\nMatplotlib not available for chart generation')
+    
+    print(f'\nDetailed comparison saved to: {comparison_file}')
+    
+    # Find best model
+    best_model = max(results.items(), key=lambda x: x[1]['best_val_acc'])
+    print(f'\n🏆 BEST MODEL: {best_model[0].upper()} (Val Acc: {best_model[1]["best_val_acc"]:.2f}%)')
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train VNFood Classification Model')
     parser.add_argument('--data_dir', type=str, default='vnfood_combined_dataset',
                        help='Path to dataset directory')
-    parser.add_argument('--model', type=str, default='efficientnet_b7',
+    parser.add_argument('--models', nargs='+', default=['efficientnet_b0'],
                    choices=['resnet50', 'resnet101', 'efficientnet_b0', 
                        'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
-                   help='Model architecture')
-    parser.add_argument('--epochs', type=int, default=100,
+                   help='Model architectures to train (space-separated)')
+    parser.add_argument('--epochs', type=int, default=30,
                        help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=32,
                        help='Batch size')
@@ -486,37 +572,55 @@ def main():
     
     args = parser.parse_args()
     
-    config = {
-        'data_dir': args.data_dir,
-        'model_name': args.model,
-        'epochs': args.epochs,
-        'batch_size': args.batch_size,
-        'learning_rate': args.lr,
-        'weight_decay': args.weight_decay,
-        'num_workers': args.num_workers,
-        'checkpoint_dir': args.checkpoint_dir,
-        'print_freq': args.print_freq,
-        'save_freq': 10,  # Save checkpoint every 10 epochs
-        'keep_best_k': 3,  # Keep top 3 best models
-        'early_stopping_patience': 7  # Stop if no val_acc improvement for 7 epochs
-    }
+    # Train multiple models and compare
+    results = {}
+    for model_name in args.models:
+        print(f'\n{"="*80}')
+        print(f'TRAINING MODEL: {model_name.upper()}')
+        print(f'{"="*80}')
+        
+        config = {
+            'data_dir': args.data_dir,
+            'model_name': model_name,
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'learning_rate': args.lr,
+            'weight_decay': args.weight_decay,
+            'num_workers': args.num_workers,
+            'checkpoint_dir': f'checkpoints_{model_name}',  # Separate checkpoint dir per model
+            'print_freq': args.print_freq,
+            'save_freq': 10,  # Save checkpoint every 10 epochs
+            'keep_best_k': 3,  # Keep top 3 best models
+            'early_stopping_patience': 7  # Stop if no val_acc improvement for 7 epochs
+        }
+        
+        # Print configuration
+        print('\nConfiguration:')
+        print(json.dumps(config, indent=2))
+        
+        # Create trainer and start training
+        trainer = VNFoodTrainer(config)
+        
+        # Auto-resume from last checkpoint if it exists
+        last_checkpoint = os.path.join(config['checkpoint_dir'], 'last_checkpoint.pth')
+        if os.path.exists(last_checkpoint):
+            print(f'\nFound existing checkpoint for {model_name}, resuming training...')
+            trainer.load_checkpoint(last_checkpoint)
+        else:
+            print(f'\nNo checkpoint found for {model_name}, starting from scratch...')
+        
+        trainer.train()
+        
+        # Store results
+        results[model_name] = {
+            'best_val_acc': trainer.best_acc,
+            'training_time': trainer.total_training_time,
+            'final_test_acc': trainer.test_acc if hasattr(trainer, 'test_acc') else None
+        }
     
-    # Print configuration
-    print('\nConfiguration:')
-    print(json.dumps(config, indent=2))
-    
-    # Create trainer and start training
-    trainer = VNFoodTrainer(config)
-    
-    # Auto-resume from last checkpoint if it exists
-    last_checkpoint = os.path.join(config['checkpoint_dir'], 'last_checkpoint.pth')
-    if os.path.exists(last_checkpoint):
-        print(f'\nFound existing checkpoint, resuming training...')
-        trainer.load_checkpoint(last_checkpoint)
-    else:
-        print('\nNo checkpoint found, starting from scratch...')
-    
-    trainer.train()
+    # Compare models
+    if len(results) > 1:
+        compare_models(results)
 
 
 if __name__ == '__main__':
