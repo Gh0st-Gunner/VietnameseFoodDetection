@@ -27,7 +27,7 @@ def load_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Load checkpoint first to detect model architecture
-    checkpoint_path = 'checkpoints/best_checkpoint.pth'
+    checkpoint_path = 'last_best_checkpoints/best_checkpoint.pth'
     if not os.path.exists(checkpoint_path):
         st.error("⚠️ Checkpoint not found. Please train the model first.")
         return None, None, None
