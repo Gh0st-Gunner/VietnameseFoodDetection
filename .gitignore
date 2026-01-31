@@ -26,10 +26,8 @@ wheels/
 # PyTorch
 *.pth
 *.pt
+checkpoints/
 *.ckpt
-
-# Allow best checkpoint
-!checkpoints/best_checkpoint.pth
 
 # Dataset (large files)
 vnfood_combined_dataset/
