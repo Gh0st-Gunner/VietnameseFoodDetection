@@ -53,3 +53,14 @@ Thumbs.db
 # Environment
 .env
 .venv
+
+#stuff
+_stickynote.txt
+Train_overview
+checkpoints_efficientnet_b0
+checkpoints_efficientnet_b3
+checkpoints_efficientnet_b7
+checkpoints_mobilenet_v3_large
+checkpoints_resnet101
+checkpoints_resnet50
+quick_accuracy_test.py

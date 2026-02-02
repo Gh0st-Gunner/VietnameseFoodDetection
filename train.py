@@ -98,8 +98,9 @@ class VNFoodTrainer:
                 transforms.Resize((256, 256)),
                 transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomRotation(15),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.RandomRotation(20),
+                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                     std=[0.229, 0.224, 0.225])
@@ -119,10 +120,11 @@ class VNFoodTrainer:
             self.setup_model()
 
             # Setup training
-            self.criterion = nn.CrossEntropyLoss()
-            self.optimizer = optim.Adam(self.model.parameters(),
-                                    lr=config['learning_rate'],
-                                    weight_decay=config['weight_decay'])
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # Add label smoothing
+            self.optimizer = optim.AdamW(self.model.parameters(),
+                                       lr=config['learning_rate'],
+                                       weight_decay=config['weight_decay'],
+                                       betas=(0.9, 0.999))
 
             # Learning rate scheduler
             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -463,7 +465,7 @@ class VNFoodTrainer:
             self.test_acc = self.test(history=history, model_name=self.config['model_name'])
 
 
-def compare_models(results):
+def compare_models(results, epochs):
     """Compare multiple trained models and save comparison results"""
     import pandas as pd
     
@@ -474,11 +476,13 @@ def compare_models(results):
     # Create comparison dataframe
     comparison_data = []
     for model_name, result in results.items():
+        avg_time_per_epoch = result.get('training_time', 0) / epochs if result.get('training_time') else 0
         comparison_data.append({
             'Model': model_name,
             'Best Val Accuracy': f"{result['best_val_acc']:.2f}%",
             'Final Test Accuracy': f"{result.get('final_test_acc', 'N/A'):.2f}%" if result.get('final_test_acc') else 'N/A',
-            'Training Time (s)': f"{result.get('training_time', 0):.1f}" if result.get('training_time') else 'N/A'
+            'Training Time (s)': f"{result.get('training_time', 0):.1f}" if result.get('training_time') else 'N/A',
+            'Avg Time/Epoch (s)': f"{avg_time_per_epoch:.1f}" if avg_time_per_epoch > 0 else 'N/A'
         })
     
     df = pd.DataFrame(comparison_data)
@@ -500,42 +504,138 @@ def compare_models(results):
                 f.write(f'  Final Test Accuracy: {result["final_test_acc"]:.2f}%\n')
             if result.get('training_time'):
                 f.write(f'  Total Training Time: {result["training_time"]:.1f} seconds\n')
+                f.write(f'  Average Time per Epoch: {result["training_time"]/epochs:.1f} seconds\n')
     
-    # Create bar chart comparison
+    # Create comprehensive model comparison charts
     try:
         import matplotlib.pyplot as plt
+        import numpy as np
         
         models = list(results.keys())
         val_accs = [results[m]['best_val_acc'] for m in models]
         test_accs = [results[m].get('final_test_acc', 0) for m in models]
+        training_times = [results[m].get('training_time', 0) for m in models]
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        # Create main comparison chart (4 panels)
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
         
-        # Validation accuracy
-        bars1 = ax1.bar(models, val_accs, color='skyblue')
-        ax1.set_title('Best Validation Accuracy Comparison')
-        ax1.set_ylabel('Accuracy (%)')
+        # Panel 1: Validation Accuracy Comparison
+        bars1 = ax1.bar(models, val_accs, color='skyblue', alpha=0.8, edgecolor='black', linewidth=1)
+        ax1.set_title('Best Validation Accuracy Comparison', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Accuracy (%)', fontsize=12)
+        ax1.set_xlabel('Models', fontsize=12)
         ax1.set_xticklabels(models, rotation=45, ha='right')
+        ax1.grid(True, alpha=0.3, axis='y')
+        ax1.set_ylim(0, max(val_accs) * 1.1)  # Set y-axis to show full range
+        
+        # Add value labels on bars
         for bar, acc in zip(bars1, val_accs):
             ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
-                    f'{acc:.1f}%', ha='center', va='bottom')
+                    f'{acc:.1f}%', ha='center', va='bottom', fontweight='bold')
         
-        # Test accuracy (if available)
+        # Panel 2: Test Accuracy Comparison (if available)
         if any(test_accs):
-            bars2 = ax2.bar(models, test_accs, color='lightgreen')
-            ax2.set_title('Final Test Accuracy Comparison')
-            ax2.set_ylabel('Accuracy (%)')
+            bars2 = ax2.bar(models, test_accs, color='lightgreen', alpha=0.8, edgecolor='black', linewidth=1)
+            ax2.set_title('Final Test Accuracy Comparison', fontsize=14, fontweight='bold')
+            ax2.set_ylabel('Accuracy (%)', fontsize=12)
+            ax2.set_xlabel('Models', fontsize=12)
             ax2.set_xticklabels(models, rotation=45, ha='right')
+            ax2.grid(True, alpha=0.3, axis='y')
+            ax2.set_ylim(0, max(test_accs) * 1.1)
+            
             for bar, acc in zip(bars2, test_accs):
                 if acc > 0:
                     ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
-                            f'{acc:.1f}%', ha='center', va='bottom')
+                            f'{acc:.1f}%', ha='center', va='bottom', fontweight='bold')
+        else:
+            ax2.text(0.5, 0.5, 'No test data available', ha='center', va='center', 
+                    transform=ax2.transAxes, fontsize=12)
+            ax2.set_title('Final Test Accuracy (N/A)', fontsize=14, fontweight='bold')
+        
+        # Panel 3: Training Time Comparison
+        bars3 = ax3.bar(models, training_times, color='orange', alpha=0.8, edgecolor='black', linewidth=1)
+        ax3.set_title('Total Training Time Comparison', fontsize=14, fontweight='bold')
+        ax3.set_ylabel('Time (seconds)', fontsize=12)
+        ax3.set_xlabel('Models', fontsize=12)
+        ax3.set_xticklabels(models, rotation=45, ha='right')
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        for bar, time_val in zip(bars3, training_times):
+            if time_val > 0:
+                ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(training_times) * 0.02, 
+                        f'{time_val:.0f}s', ha='center', va='bottom', fontweight='bold')
+        
+        # Panel 4: Accuracy vs Training Time Scatter Plot
+        scatter = ax4.scatter(training_times, val_accs, color='red', s=150, alpha=0.7, edgecolors='black', linewidth=1)
+        ax4.set_title('Accuracy vs Training Time Trade-off', fontsize=14, fontweight='bold')
+        ax4.set_xlabel('Training Time (seconds)', fontsize=12)
+        ax4.set_ylabel('Validation Accuracy (%)', fontsize=12)
+        ax4.grid(True, alpha=0.3)
+        
+        # Add model labels to scatter points with better positioning
+        for i, model in enumerate(models):
+            ax4.annotate(model.upper(), (training_times[i], val_accs[i]), 
+                        xytext=(10, 10), textcoords='offset points',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.8),
+                        fontweight='bold', fontsize=10)
         
         plt.tight_layout()
         plt.savefig(os.path.join('model_comparison', 'model_comparison_chart.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f'\nComparison chart saved to: model_comparison/model_comparison_chart.png')
+        # Create separate accuracy-focused chart
+        fig2, (ax5, ax6) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Accuracy comparison with ranking
+        sorted_indices = np.argsort(val_accs)[::-1]  # Sort by validation accuracy descending
+        sorted_models = [models[i] for i in sorted_indices]
+        sorted_val_accs = [val_accs[i] for i in sorted_indices]
+        sorted_test_accs = [test_accs[i] for i in sorted_indices]
+        
+        # Ranked validation accuracy
+        colors = ['gold', 'silver', '#CD7F32'] + ['skyblue'] * (len(models) - 3)  # Gold, silver, bronze, then blue
+        bars5 = ax5.bar(range(len(sorted_models)), sorted_val_accs, color=colors[:len(sorted_models)], 
+                       alpha=0.8, edgecolor='black', linewidth=1)
+        ax5.set_title('Models Ranked by Validation Accuracy', fontsize=14, fontweight='bold')
+        ax5.set_ylabel('Accuracy (%)', fontsize=12)
+        ax5.set_xticks(range(len(sorted_models)))
+        ax5.set_xticklabels([f'{i+1}. {model}' for i, model in enumerate(sorted_models)], rotation=45, ha='right')
+        ax5.grid(True, alpha=0.3, axis='y')
+        ax5.set_ylim(0, max(sorted_val_accs) * 1.1)
+        
+        for i, (bar, acc) in enumerate(zip(bars5, sorted_val_accs)):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                    f'{acc:.1f}%', ha='center', va='bottom', fontweight='bold')
+        
+        # Accuracy difference (Val - Test) if test data available
+        if any(test_accs):
+            acc_diff = [val - test for val, test in zip(sorted_val_accs, sorted_test_accs)]
+            colors_diff = ['green' if diff >= 0 else 'red' for diff in acc_diff]
+            bars6 = ax6.bar(range(len(sorted_models)), acc_diff, color=colors_diff, 
+                           alpha=0.8, edgecolor='black', linewidth=1)
+            ax6.set_title('Accuracy Difference (Val - Test)', fontsize=14, fontweight='bold')
+            ax6.set_ylabel('Accuracy Difference (%)', fontsize=12)
+            ax6.set_xticks(range(len(sorted_models)))
+            ax6.set_xticklabels(sorted_models, rotation=45, ha='right')
+            ax6.grid(True, alpha=0.3, axis='y')
+            ax6.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+            
+            for i, (bar, diff) in enumerate(zip(bars6, acc_diff)):
+                ax6.text(bar.get_x() + bar.get_width()/2, bar.get_height() + (0.01 if diff >= 0 else -0.01), 
+                        f'{diff:+.1f}%', ha='center', va=('bottom' if diff >= 0 else 'top'), 
+                        fontweight='bold', color='white')
+        else:
+            ax6.text(0.5, 0.5, 'Test accuracy not available\nfor difference calculation', 
+                    ha='center', va='center', transform=ax6.transAxes, fontsize=12)
+            ax6.set_title('Accuracy Difference (N/A)', fontsize=14, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join('model_comparison', 'accuracy_comparison_chart.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f'\n📊 Charts saved:')
+        print(f'   - Full comparison: model_comparison/model_comparison_chart.png')
+        print(f'   - Accuracy focus: model_comparison/accuracy_comparison_chart.png')
         
     except ImportError:
         print('\nMatplotlib not available for chart generation')
@@ -551,16 +651,17 @@ def main():
     parser = argparse.ArgumentParser(description='Train VNFood Classification Model')
     parser.add_argument('--data_dir', type=str, default='vnfood_combined_dataset',
                        help='Path to dataset directory')
-    parser.add_argument('--models', nargs='+', default=['efficientnet_b0'],
+    parser.add_argument('--models', nargs='+', default=['resnet50', 'resnet101', 'efficientnet_b0', 
+                       'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
                    choices=['resnet50', 'resnet101', 'efficientnet_b0', 
                        'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
                    help='Model architectures to train (space-separated)')
-    parser.add_argument('--epochs', type=int, default=30,
+    parser.add_argument('--epochs', type=int, default=10,
                        help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=16,
                        help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.001,
-                       help='Learning rate')
+    parser.add_argument('--lr', type=float, default=0.0001,
+                       help='Learning rate (default: 0.0001 for transfer learning)')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                        help='Weight decay')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -589,7 +690,7 @@ def main():
             'num_workers': args.num_workers,
             'checkpoint_dir': f'checkpoints_{model_name}',  # Separate checkpoint dir per model
             'print_freq': args.print_freq,
-            'save_freq': 10,  # Save checkpoint every 10 epochs
+            'save_freq': 5,  # Save checkpoint every 10 epochs
             'keep_best_k': 3,  # Keep top 3 best models
             'early_stopping_patience': 7  # Stop if no val_acc improvement for 7 epochs
         }
@@ -620,7 +721,7 @@ def main():
     
     # Compare models
     if len(results) > 1:
-        compare_models(results)
+        compare_models(results, args.epochs)
 
 
 if __name__ == '__main__':
