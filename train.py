@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 import json
 import argparse
+import optuna
 
 
 class VNFoodTrainer:
@@ -133,6 +134,7 @@ class VNFoodTrainer:
 
             # Best accuracy tracking
             self.best_acc = 0.0
+            self.best_loss = float('inf')
             self.start_epoch = 1
             self.best_checkpoints = []  # List of (epoch, acc, path) tuples for top-K models
 
@@ -264,10 +266,15 @@ class VNFoodTrainer:
         
         def validate(self):
             """Validate the model"""
+            from sklearn.metrics import f1_score, precision_score, recall_score
+            import numpy as np
+            
             self.model.eval()
             running_loss = 0.0
             correct = 0
             total = 0
+            y_true = []
+            y_pred = []
             
             with torch.no_grad():
                 for inputs, targets in self.val_loader:
@@ -279,11 +286,21 @@ class VNFoodTrainer:
                     _, predicted = outputs.max(1)
                     total += targets.size(0)
                     correct += predicted.eq(targets).sum().item()
+                    y_true.extend(targets.cpu().numpy())
+                    y_pred.extend(predicted.cpu().numpy())
             
             val_loss = running_loss / len(self.val_loader)
             val_acc = 100. * correct / total
             
-            return val_loss, val_acc
+            # Calculate additional metrics
+            try:
+                f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+                precision = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+                recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+            except:
+                f1, precision, recall = 0.0, 0.0, 0.0
+            
+            return val_loss, val_acc, f1, precision, recall
         
         def test(self, history=None, model_name=None):
             """Test the model and save overview"""
@@ -325,7 +342,7 @@ class VNFoodTrainer:
                 self.save_train_overview(history, y_true, y_pred, model_name)
             return test_acc
         
-        def save_checkpoint(self, epoch, val_acc, is_best=False):
+        def save_checkpoint(self, epoch, val_acc, is_best=False, f1=0.0, precision=0.0, recall=0.0):
             """Save model checkpoint"""
             checkpoint_dir = self.config['checkpoint_dir']
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -337,6 +354,10 @@ class VNFoodTrainer:
                 'scheduler_state_dict': self.scheduler.state_dict(),
                 'val_acc': val_acc,
                 'best_acc': self.best_acc,
+                'best_loss': self.best_loss,
+                'f1_score': f1,
+                'precision': precision,
+                'recall': recall,
                 'config': self.config,
                 'class_names': self.class_names,
                 'best_checkpoints': self.best_checkpoints
@@ -401,6 +422,7 @@ class VNFoodTrainer:
             
             self.start_epoch = checkpoint['epoch'] + 1
             self.best_acc = checkpoint.get('best_acc', 0.0)
+            self.best_loss = checkpoint.get('best_loss', float('inf'))
             
             if 'best_checkpoints' in checkpoint:
                 self.best_checkpoints = checkpoint['best_checkpoints']
@@ -445,6 +467,8 @@ class VNFoodTrainer:
                     self.best_acc = val_acc
                     self.early_stopping_counter = 0
                     self.early_stopping_best = val_acc
+                if val_loss < self.best_loss:
+                    self.best_loss = val_loss
                 else:
                     self.early_stopping_counter += 1
                     print(f"Early stopping counter: {self.early_stopping_counter} / {self.early_stopping_patience}")
@@ -647,19 +671,46 @@ def compare_models(results, epochs):
     print(f'\n🏆 BEST MODEL: {best_model[0].upper()} (Val Acc: {best_model[1]["best_val_acc"]:.2f}%)')
 
 
+def objective(trial, model_name, base_config):
+    """Optuna objective function for hyperparameter optimization"""
+    # Suggest hyperparameters
+    lr = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+    weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
+    epochs = trial.suggest_int('epochs', 5, 20)  # Shorter for tuning
+
+    # Update config with suggested values
+    config = base_config.copy()
+    config.update({
+        'learning_rate': lr,
+        'batch_size': batch_size,
+        'weight_decay': weight_decay,
+        'epochs': epochs,
+        'checkpoint_dir': f'temp_checkpoints_{model_name}_{trial.number}',  # Temp dir for tuning
+        'save_freq': epochs + 1,  # Don't save during tuning
+        'early_stopping_patience': epochs  # Disable early stopping for short runs
+    })
+
+    # Create trainer and train
+    trainer = VNFoodTrainer(config)
+    trainer.train()
+
+    # Return the best validation loss (to minimize)
+    return trainer.best_loss
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train VNFood Classification Model')
     parser.add_argument('--data_dir', type=str, default='vnfood_combined_dataset',
                        help='Path to dataset directory')
-    parser.add_argument('--models', nargs='+', default=['resnet50', 'resnet101', 'efficientnet_b0', 
-                       'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
+    parser.add_argument('--models', nargs='+', default=['efficientnet_b7'],
                    choices=['resnet50', 'resnet101', 'efficientnet_b0', 
                        'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
                    help='Model architectures to train (space-separated)')
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=20,
                        help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=16,
-                       help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=32,
+                       help='Batch size')                    
     parser.add_argument('--lr', type=float, default=0.0001,
                        help='Learning rate (default: 0.0001 for transfer learning)')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -670,58 +721,99 @@ def main():
                        help='Directory to save checkpoints')
     parser.add_argument('--print_freq', type=int, default=50,
                        help='Print frequency')
+    parser.add_argument('--tune', action='store_true',
+                       help='Enable hyperparameter tuning with Optuna')
+    parser.add_argument('--tune_model', type=str, default=['efficientnet_b7'],
+                       choices=['resnet50', 'resnet101', 'efficientnet_b0', 
+                               'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
+                       help='Model to tune hyperparameters for (used with --tune)')
+    parser.add_argument('--n_trials', type=int, default=50,
+                       help='Number of Optuna trials (used with --tune)')
     
     args = parser.parse_args()
     
-    # Train multiple models and compare
-    results = {}
-    for model_name in args.models:
+    if args.tune:
+        # Hyperparameter tuning mode
         print(f'\n{"="*80}')
-        print(f'TRAINING MODEL: {model_name.upper()}')
+        print(f'HYPERPARAMETER TUNING FOR: {args.tune_model.upper()}')
         print(f'{"="*80}')
         
-        config = {
+        base_config = {
             'data_dir': args.data_dir,
-            'model_name': model_name,
-            'epochs': args.epochs,
-            'batch_size': args.batch_size,
-            'learning_rate': args.lr,
-            'weight_decay': args.weight_decay,
+            'model_name': args.tune_model,
             'num_workers': args.num_workers,
-            'checkpoint_dir': f'checkpoints_{model_name}',  # Separate checkpoint dir per model
             'print_freq': args.print_freq,
-            'save_freq': 5,  # Save checkpoint every 10 epochs
-            'keep_best_k': 3,  # Keep top 3 best models
-            'early_stopping_patience': 7  # Stop if no val_acc improvement for 7 epochs
+            'save_freq': 1000,  # Don't save during tuning
+            'keep_best_k': 1,
+            'early_stopping_patience': 1000  # Disable
         }
         
-        # Print configuration
-        print('\nConfiguration:')
-        print(json.dumps(config, indent=2))
+        def objective_wrapper(trial):
+            return objective(trial, args.tune_model, base_config)
         
-        # Create trainer and start training
-        trainer = VNFoodTrainer(config)
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective_wrapper, n_trials=args.n_trials)
         
-        # Auto-resume from last checkpoint if it exists
-        last_checkpoint = os.path.join(config['checkpoint_dir'], 'last_checkpoint.pth')
-        if os.path.exists(last_checkpoint):
-            print(f'\nFound existing checkpoint for {model_name}, resuming training...')
-            trainer.load_checkpoint(last_checkpoint)
-        else:
-            print(f'\nNo checkpoint found for {model_name}, starting from scratch...')
+        print(f'\nBest hyperparameters for {args.tune_model}:')
+        print(study.best_params)
+        print(f'Best validation loss: {study.best_value:.4f}')
         
-        trainer.train()
+        # Save best params
+        with open(f'best_params_{args.tune_model}.json', 'w') as f:
+            json.dump(study.best_params, f, indent=2)
+        print(f'Best parameters saved to: best_params_{args.tune_model}.json')
         
-        # Store results
-        results[model_name] = {
-            'best_val_acc': trainer.best_acc,
-            'training_time': trainer.total_training_time,
-            'final_test_acc': trainer.test_acc if hasattr(trainer, 'test_acc') else None
-        }
-    
-    # Compare models
-    if len(results) > 1:
-        compare_models(results, args.epochs)
+    else:
+        # Normal training mode
+        # Train multiple models and compare
+        results = {}
+        for model_name in args.models:
+            print(f'\n{"="*80}')
+            print(f'TRAINING MODEL: {model_name.upper()}')
+            print(f'{"="*80}')
+            
+            config = {
+                'data_dir': args.data_dir,
+                'model_name': model_name,
+                'epochs': args.epochs,
+                'batch_size': args.batch_size,
+                'learning_rate': args.lr,
+                'weight_decay': args.weight_decay,
+                'num_workers': args.num_workers,
+                'checkpoint_dir': f'checkpoints_{model_name}',  # Separate checkpoint dir per model
+                'print_freq': args.print_freq,
+                'save_freq': 5,  # Save checkpoint every 10 epochs
+                'keep_best_k': 3,  # Keep top 3 best models
+                'early_stopping_patience': 7  # Stop if no val_acc improvement for 7 epochs
+            }
+            
+            # Print configuration
+            print('\nConfiguration:')
+            print(json.dumps(config, indent=2))
+            
+            # Create trainer and start training
+            trainer = VNFoodTrainer(config)
+            
+            # Auto-resume from last checkpoint if it exists
+            last_checkpoint = os.path.join(config['checkpoint_dir'], 'last_checkpoint.pth')
+            if os.path.exists(last_checkpoint):
+                print(f'\nFound existing checkpoint for {model_name}, resuming training...')
+                trainer.load_checkpoint(last_checkpoint)
+            else:
+                print(f'\nNo checkpoint found for {model_name}, starting from scratch...')
+            
+            trainer.train()
+            
+            # Store results
+            results[model_name] = {
+                'best_val_acc': trainer.best_acc,
+                'training_time': trainer.total_training_time,
+                'final_test_acc': trainer.test_acc if hasattr(trainer, 'test_acc') else None
+            }
+        
+        # Compare models
+        if len(results) > 1:
+            compare_models(results, args.epochs)
 
 
 if __name__ == '__main__':

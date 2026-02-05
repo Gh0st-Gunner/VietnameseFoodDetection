@@ -31,7 +31,6 @@ checkpoints/
 
 # Dataset (large files)
 vnfood_combined_dataset/
-last_best_checkpoint/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
@@ -55,6 +54,8 @@ Thumbs.db
 .venv
 
 #stuff
+saved/
+
 _stickynote.txt
 Train_overview
 checkpoints_efficientnet_b0
@@ -63,4 +64,5 @@ checkpoints_efficientnet_b7
 checkpoints_mobilenet_v3_large
 checkpoints_resnet101
 checkpoints_resnet50
+checkpoints_resnet50_saved
 quick_accuracy_test.py
