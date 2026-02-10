@@ -448,7 +448,6 @@ class VNFoodTrainer:
                 self.total_training_time += epoch_time
                 # Validate
                 val_loss, val_acc = self.validate()
-                # Update learning rate
                 self.scheduler.step(val_acc)
                 # Log
                 history['train_loss'].append(train_loss)
@@ -481,11 +480,9 @@ class VNFoodTrainer:
             print(f'Training Complete!')
             print(f'Best Validation Accuracy: {self.best_acc:.2f}%')
             print(f'{"="*60}\n')
-            # Load best model and test
             print('Loading best model for testing...')
             best_checkpoint = torch.load(os.path.join(self.config['checkpoint_dir'], 'best_checkpoint.pth'))
             self.model.load_state_dict(best_checkpoint['model_state_dict'])
-            # Test and save overview
             self.test_acc = self.test(history=history, model_name=self.config['model_name'])
 
 
@@ -497,7 +494,6 @@ def compare_models(results, epochs):
     print('MODEL COMPARISON RESULTS')
     print(f'{"="*80}')
     
-    # Create comparison dataframe
     comparison_data = []
     for model_name, result in results.items():
         avg_time_per_epoch = result.get('training_time', 0) / epochs if result.get('training_time') else 0

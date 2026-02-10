@@ -4,6 +4,7 @@ Features: Multi-model classification, model comparison, app information
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
@@ -255,6 +256,37 @@ def generate_pipeline_image():
 
 def display_pipeline_diagram():
     """Display the pipeline diagram"""
+    assets_png = os.path.join('assets', 'pipeline.png')
+    assets_drawio = os.path.join('assets', 'pipeline.drawio')
+
+    if os.path.exists(assets_png):
+        st.image(assets_png, use_container_width=True)
+        return
+
+    if os.path.exists(assets_drawio):
+        try:
+            with open(assets_drawio, 'rb') as file_handle:
+                content = file_handle.read()
+            text = content.decode('utf-8', errors='ignore')
+
+            if '<svg' in text.lower():
+                svg_start = text.lower().find('<svg')
+                svg_text = text[svg_start:]
+                components.html(svg_text, height=800, scrolling=True)
+                return
+
+            st.info("Found assets/pipeline.drawio, but it can't be rendered directly. Export to PNG/SVG for display.")
+            st.download_button(
+                label="Download pipeline.drawio",
+                data=content,
+                file_name="pipeline.drawio",
+                mime="application/xml"
+            )
+            return
+        except Exception:
+            st.warning("Failed to load pipeline.drawio. Using generated diagram for now.")
+
+    st.info("Pipeline image not found in assets/. Using generated diagram for now.")
     fig = generate_pipeline_image()
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
