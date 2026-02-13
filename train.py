@@ -447,7 +447,7 @@ class VNFoodTrainer:
                 train_loss, train_acc, epoch_time = self.train_epoch(epoch)
                 self.total_training_time += epoch_time
                 # Validate
-                val_loss, val_acc = self.validate()
+                val_loss, val_acc, f1, precision, recall = self.validate()
                 self.scheduler.step(val_acc)
                 # Log
                 history['train_loss'].append(train_loss)
@@ -471,7 +471,7 @@ class VNFoodTrainer:
                 else:
                     self.early_stopping_counter += 1
                     print(f"Early stopping counter: {self.early_stopping_counter} / {self.early_stopping_patience}")
-                self.save_checkpoint(epoch, val_acc, is_best)
+                self.save_checkpoint(epoch, val_acc, is_best, f1, precision, recall)
                 # Early stopping check
                 if self.early_stopping_counter >= self.early_stopping_patience:
                     print(f"\nEarly stopping triggered after {self.early_stopping_patience} epochs without improvement.")
@@ -699,7 +699,8 @@ def main():
     parser = argparse.ArgumentParser(description='Train VNFood Classification Model')
     parser.add_argument('--data_dir', type=str, default='vnfood_combined_dataset',
                        help='Path to dataset directory')
-    parser.add_argument('--models', nargs='+', default=['efficientnet_b7'],
+    parser.add_argument('--models', nargs='+', default=['resnet50', 'resnet101', 'efficientnet_b0', 
+                       'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
                    choices=['resnet50', 'resnet101', 'efficientnet_b0', 
                        'efficientnet_b3', 'efficientnet_b7', 'mobilenet_v3_large'],
                    help='Model architectures to train (space-separated)')
