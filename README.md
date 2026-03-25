@@ -11,6 +11,9 @@ A deep learning application that classifies images of Vietnamese dishes into 103
 - **Auto Model Detection** - Automatically detects the trained model architecture from checkpoints
 - **Transfer Learning** - Uses ImageNet pre-trained weights for better performance
 
+##Application
+please visit https://vietnamesefooddetection.streamlit.app/ to get into this app
+
 ## 🚀 Quick Start
 
 ### Installation
